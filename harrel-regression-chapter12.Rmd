@@ -1,0 +1,214 @@
+---
+title: "Regression Modeling Strategies - Chapter 12"
+---
+
+Description: develop a binary logistic regression model to describe survival patterns of Titanic passengers.
+- Nonparametric regression - nonparametric tests do not rely on an assumed distribution of the data
+- Multiple imputation to complete missing ages
+
+12.1 Descriptive Statistics
+```{r}
+require(rms)
+
+getHdata(titanic3)
+
+# list of names of variables to analyze
+v <- c('pclass', 'survived', 'age', 'sex', 'sibsp', 'parch') #sibsp: # of siblings/spouses aboard, parch: # of parents/children aboard
+t3 <- titanic3[, v] #subset original dataset
+units(t3$age) <- 'years'
+latex(describe(t3), file='')
+```
+
+Truncate sibsp and parch at 3 (bc not many passengers are >3) to estimate stratified survival probabilities. About 30% of observations are missing ages.
+
+```{r}
+dd <- datadist(t3)
+# describe distributions of variables to rms
+options(datadist='dd')
+s <- summary(survived ~ age + sex + pclass +
+               cut2(sibsp,0:3) + cut2(parch,0:3), data=t3)
+plot(s, main='', subtitles=FALSE)
+```
+
+There are strong effects of sex and class on survival. The effect of parch and sibsp is unclear. To clarify, show four-way empirical relationships with the fraction of surviving passengers by creating four cells for sipsp x parch combinations and creating two age groups. Suppress proportions based on < 25 passengers in a cell.
+
+```{r}
+#transform variables in t3 and assign to new data frame
+tn <- transform(t3, 
+                agec = ifelse(age < 21, 'child', 'adult'),
+                sibsp = ifelse(sibsp == 0, 'no sib/sp', 'sib/sp'),
+                parch = ifelse(parch ==0, 'no par/child', 'par/child'))
+
+g <- function(y) if(length(y) < 25) NA else mean(y)
+s <- with(tn, summarize(survived, 
+                        llist(agec, sex, pclass, sibsp, parch), g)) ## ERROR - can't summarize on survived because the class is labelled
+ggplot(subset(s, agec != 'NA'),
+       aes(x=survived, y=pclass, shape=sex)) +
+  geom_point() + facet_grid(agec ~ sibsp * parch) +
+  xlab('Proportion Surviving') + ylab('Passenger Class') +
+  scale_x_continuous(breaks=c(0, .5, 1))
+
+```
+
+12.2 Exploring Trends with Nonparametric Regression
+
+```{r}
+b <- scale_size_discrete(range=c(.1, .85))
+yl <- ylab(NULL)
+p1 <- ggplot(t3, aes(x=age, y=survived)) +
+  histSpikeg(survived ~ age, lowess=TRUE, data=t3) +
+  ylim(0,1) + yl
+p2 <- ggplot(t3, aes(x=age, y=survived, color=sex)) +
+  histSpikeg(survived ~ age + sex, lowess=TRUE,
+             data=t3) + ylim(0,1) + yl
+p3 <- ggplot(t3, aes(x=age, y=survivad, size=pclass)) +
+  histSpikeg(survived ~ age + pclass, lowess=TRUE,
+             data=t3) + b + ylim(0,1) + yl
+p4 <- ggplot(t3, aes(x=age, y=survived, color=sex, 
+                     size=pclass)) +
+  histSpikeg(survived ~ age + sex + pclass, 
+             lowess=TRUE, data=t3) +
+  b + ylim(0,1) + yl
+gridExtra::grid.arrange(p1, p2, p3, p4, ncol=2)
+```
+
+```{r}
+top <- theme(legend.position='top')
+p1 <- ggplot(t3, aes(x=age, y=survived, color=cut2(sibsp,
+        0:2))) + stat_plsmo() + b + ylim(0,1) + yl + top +
+  scale_color_discrete(name='siblings/spouses')
+p2 <- ggplot(t3, aes(x=age, y=survived, color=cut2(parch,
+        0:2))) + stat_plsmo() + b + ylim(0,1) + yl + top +
+  scale_color_discrete(name='parents/children')
+gridExtra::grid.arrange(p1, p2, ncol=2)
+```
+
+
+12.3 Binary Logistic Model with Casewise Deletion of Missing Values
+
+Eliminate observations that have missing data 
+
+```{r}
+f1 <- lrm(survived ~ sex*pclass*rcs(age,5) +
+            rcs(age,5)*(sibsp + parch), data=t3)
+latex(anova(f1), file=' ', label='titanic-anova3',
+      size='small')
+
+f <- lrm(survived ~ (sex + pclass + rcs(age, 5))^2 +
+           rcs(age,5)*sibsp, data=t3)
+print(f, latex=TRUE)
+```
+
+```{r}
+latex(anova (f), file=' ', label='titanic-anova2 ', size='small')
+
+p <- Predict(f, age, sex, pclass, sibsp=0, fun=plogis)
+ggplot(p)
+```
+
+```{r}
+ggplot(Predict(f, sibsp, age=c(10,15,20,50), conf.int=FALSE))
+```
+
+```{r}
+f <- update(f, x=TRUE, y=TRUE)
+set.seed(131)
+latex(validate(f, B=200), digits=2, size='Ssize ')
+```
+
+```{r}
+cal <- calibrate(f, B=200)
+plot(cal, subtitles = FALSE)
+```
+
+12.4 Examining Missing Data Patterns
+```{r}
+na.patterns <- naclus(titanic3)
+require(rpart)
+who.na <- rpart(is.na(age) ~ sex + pclass + survived +
+                  sibsp + parch, data=titanic3, minbucket=15)
+naplot(na.patterns, 'na per var')
+plot(who.na, margin=.1); text(who.na)
+plot(na.patterns)
+```
+
+```{r}
+plot(summary(is.na(age) ~ sex + pclass + survived +
+               sibsp + parch, data=t3))
+```
+
+```{r}
+m <- lrm(is.na(age) ~ sex * pclass + survived + sibsp + parch, 
+         data = t3)
+print(m, latex=TRUE, needspace='2in')
+```
+
+```{r}
+latex(anova(m), file=' ', label='titanic-anova.na')
+```
+
+12.5 Multiple Imputation
+
+```{r}
+set.seed(17)
+mi <- aregImpute (~ age + sex + pclass +
+                    sibsp + parch + survived, 
+                  data=t3, n.impute=20, nk=4, pr=FALSE)
+mi
+```
+
+```{r}
+mi$imputed$age[1:10, 1:10] #print first 10 imputations
+```
+
+```{r}
+plot(mi)
+Ecdf(t3$age, add=TRUE, col='gray', lwd=2,
+     subtitles = FALSE)
+```
+
+```{r}
+f.mi <- fit.mult.impute(
+  survived ~ (sex + pclass + rcs(age,5))^2 +
+    rcs(age,5)*sibsp,
+  lrm, mi, data=t3, pr=FALSE)
+latex(anova(f.mi), file = ' ', label='titanic-anova.mi',
+      size='small')
+)
+```
+```{r}
+p1 <- Predict(f, age, pclass, sex,  sibsp=0, fun=plogis)
+p2 <- Predict(f.mi, age, pclass, sex,  sibsp=0, fun=plogis)
+p <- rbind('Casewise Deletion'=p1, 'Multiple Imputation'=p2)
+ggplot(p, groups='sex', ylab='Probability of Surviving')
+```
+
+12.6 Summarizing the Fitted Model
+
+```{r}
+s <- summary(f.mi, age=c(1,30), sibsp=0:1)
+plot(s, log=TRUE, main=' ')
+```
+
+```{r}
+phat <- predict(f.mi, 
+                combos <- 
+                  expand.grid(age=c(2, 21, 50), sex=levels(t3$sex),
+                              pclass=levels(t3$pclass),
+                              sibsp=0), type = 'fitted')
+
+options(digits=1)
+data.frame(combos, phat)
+```
+
+```{r}
+options(digits=5)
+pred.logit <- Function(f.mi)
+latex(pred.logit, file='', type='Sinput', size='small',
+      width.cutoff=49)
+```
+
+```{r}
+plogis(pred.logit(age=c(2,21,50), sex='male', pclass='3rd'))
+```
+
