@@ -160,3 +160,56 @@ v5 <- validate(f, bw=TRUE, sls=0.5, type='individual', B=200)
 latex(v5, digits=3, B=0)
 ```
 
+11.7 Model Approximation
+
+Approximate the full model as an alternative to stepwise variable selection
+
+```{r}
+lp <- predict(f) #compute linear predictor from fill model
+# insert sigma=1 as otherwise sigma=0 will cause problems
+a <- ols(lp ~ sz + sg + log(ap) + sbp + dbp + age + wt +
+           hg + ekg + pf + bm + hx + rx + dtime, sigma=1,
+         data=psub)
+# specify silly stopping criterion to remove all variables
+s <- fastbw(a, aics=10000)
+betas <- s$Coefficients #matrix, rows=iterations
+X <- cbind(1, f$x) #design matrix
+# Compute the series of approximations to lp
+ap <- X %*% t(betas)
+# For each approx. compute approximation R^2 and ratio of
+# likelihood ratio chi-square for approximate model to that of original model
+m <- ncol(ap) - 1 #all but intercept-only model
+r2 <- frac <- numeric(m)
+fullchisq <- f$stats['Model L.R.']
+for (i in 1:m) {
+  lpa <- ap[,i]
+  r2[i] <- cor(lpa, lp)^2
+  fapprox <- lrm(cvd ~ lpa, data=psub)
+  frac[i] <- fapprox$stats['Model L.R.'] / fullchisq
+} 
+plot(r2, frac, type='b',
+     xlab=expression(paste('Approximation ', R^2)),
+     ylab=expression(paste('Fraction of ',
+                           chi^2, ' Preserved')))
+abline(h=.95, col=gray(.83)); abline(v=.95, col=gray(.83))
+abline(a=0, b=1, col=gray(.83))
+```
+
+```{r}
+fapprox <- ols(lp ~ sz + sg +log(ap) + age + ekg + pf + hx +
+                 rx, data=psub)
+fapprox$stats['R2']
+```
+
+```{r}
+latex(fapprox, file='')
+```
+
+```{r}
+nom <- nomogram(fapprox, ap=c(.1, .5, 1, 5, 10, 20, 30, 40),
+                fun=plogis, funlabel="Probability",
+                lp.at=(-5):4,
+                fun.lp.at=qlogis(c(.01, .05, .25, .5, .75, .95, .99)))
+plot(nom, xfrac=.45)
+```
+
