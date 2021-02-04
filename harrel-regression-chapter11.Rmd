@@ -1,0 +1,162 @@
+---
+title: "Regression Modeling Strategies - Chapter 11"
+output:
+  html_notebook: default
+  pdf_document: default
+---
+
+
+```{r}
+require(rms)
+getHdata(prostate)
+head(prostate)
+```
+
+11.3 Data Transformations and Single Imputation
+
+```{r}
+prostate <- 
+  within(prostate, {
+    levels(ekg)[levels(ekg) %in%
+                  c('old MI', 'recent MI')] <- 'MI' #combine old MI and recent MI in MI
+    ekg.norm <- 1*(ekg %in% c('normal','benign')) #assign value of 1 to ekg.norm if ekg is normal or benign
+    levels(ekg) <- abbreviate(levels(ekg)) #abbreviate strings to minimum length characters
+    pfn <- as.numeric(pf)
+    levels(pf) <- levels(pf)[c(1,2,3,3)] #assign numeric values to categories in pf
+    cvd <- status %in% c("dead - heart or vascular",
+                         "dead - cerebrovascular") #assign value of TRUE if status is dead - heart or vascular or dead - cerebrovascular
+    rxn = as.numeric(rx) })
+
+```
+
+```{r}
+ptrans <- 
+  transcan(~ sz + sg + ap + sbp + dbp +
+             age + wt + hg + ekg + pf + bm + hx + dtime + rx,
+           imputed=TRUE, transformed=TRUE,
+           data=prostate, pl=FALSE, pr=FALSE)
+
+imp <- impute(ptrans, data=prostate, list.out=TRUE)
+```
+
+```{r}
+NAvars <- all.vars(~ sz + sg + age + wt + ekg)
+for(x in NAvars) prostate [[x]] <- imp[[x]]
+subset <- prostate$status %in% c("dead - heart or vascular", 
+                                 "dead - cerebrovascular", "dead - prostatic ca")
+trans <- ptrans$transformed[subset,]
+psub <- prostate[subset,]
+```
+
+11.4 Regression on Original Variables, Principal Components and Pretransformations
+
+How well do PCs on raw and transformed variables predict the cause of death?
+
+```{r}
+sum(prostate$cvd) #there are 127 cases where death is due to heart or vascular or cerebrovascular
+```
+
+```{r}
+ipc <- function(x, k=1, ...)
+  princomp(x, ..., cor=TRUE)$scores[,1:k] #function to compute the first k PCs
+
+#compute the first 8 PCs on raw variables then transformed ones
+pc8 <- ipc( ~ sz + sg + log(ap) + sbp + dbp + age +
+              wt + hg + ekg.norm + pfn + bm + hx + rxn + dtime, 
+            data=psub, k=8)
+f8 <- lrm(cvd ~ pc8, data=psub)
+pc8t <- ipc(trans, k=8)
+f8t <- lrm(cvd ~ pc8t, data=psub)
+
+#fit binary logistic model on original variables
+f <- lrm(cvd ~ sz + sg + log(ap) + sbp + dbp + age +
+              wt + hg + ekg + pf + bm + hx + rx + dtime, data=psub)
+
+#expand continuous variables using splines
+g <- lrm(cvd ~ rcs(sz,4) + rcs(sg,4) + rcs(log(ap),4) +
+           rcs(sbp,4) + rcs(dbp,4) + rcs(age,4) + rcs(wt,4) +
+           rcs(hg,4) + ekg + pf + bm + hx + rx + rcs(dtime,4),
+         data=psub)
+
+#fit binary logistic model on individual transformed var
+h <- lrm(cvd ~ trans, data=psub)
+
+#compare the five approaches to modeling using AIC  - smaller is better
+
+c(f8=AIC(f8), f8t=AIC(f8t), f=AIC(f), g=AIC(g), h=AIC(h))
+```
+
+
+11.5 Description of Fitted Model
+```{r}
+print(f, latex=TRUE)
+```
+
+```{r}
+an <- anova(f)
+latex(an, file='', table.env=FALSE) #got an error message when executing this code
+```
+
+```{r}
+plot(an)
+s <- f$stats
+gamma.hat <- (s['Model L.R.'] - s['d.f.'])/s['Model L.R.']
+```
+
+```{r}
+dd <- datadist(psub); options(datadist='dd')
+ggplot(Predict(f), sepdiscrete='vertical', vnames='names',
+       rdata=psub,
+       histSpike.opts=list(frac=function(f) .1*f/max(f) ))
+```
+
+```{r}
+plot(summary(f), log=TRUE)
+```
+
+11.6 Backwards Step-Down
+
+Identify the variables that explain the bulk of the cause of death - use fastbw() or fast backward step-down 
+
+```{r}
+fastbw(f)
+```
+
+```{r}
+fred <- lrm(cvd ~ sz + log(ap) + age + hx, data=psub)
+latex(fred, file='')
+```
+
+```{r}
+nom <- nomogram(fred, ap=c(.1, .5, 1, 5, 10, 50),
+                fun = plogis, funlabel="Probability",
+                fun.at=c(.01, .05, .1, .25, .5, .75, .9, .95, .99))
+plot(nom, xfrac=.45)
+```
+
+```{r}
+f <- update(f, x=TRUE, y=TRUE)
+v <- validate(f, B=200, bw=TRUE)
+```
+```{r}
+latex(v, B=20, digits=3)
+```
+
+```{r}
+cal <- calibrate(f, B=200, bw=TRUE)
+plot(cal)
+```
+
+```{r}
+vfull <- validate(f, B=200)
+latex(vfull, digits=3)
+```
+
+```{r}
+v5 <- validate(f, bw=TRUE, sls=0.5, type='individual', B=200)
+```
+
+```{r}
+latex(v5, digits=3, B=0)
+```
+
